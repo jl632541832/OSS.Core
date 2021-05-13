@@ -3,11 +3,14 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using OSS.Common.BasicMos.Resp;
+using OSS.Common.Extention;
 using OSS.Core.Context;
 using OSS.Core.Context.Mos;
 using OSS.Core.Infrastructure.Web.Attributes.Auth.Interface;
+using OSS.Core.Infrastructure.Web.Helpers;
 
 namespace OSS.Core.Infrastructure.Web.Attributes.Auth
 {
@@ -18,6 +21,10 @@ namespace OSS.Core.Infrastructure.Web.Attributes.Auth
     {
         private readonly UserAuthOption _userOption;
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="userOption"></param>
         public UserAuthAttribute(UserAuthOption userOption)
         {
             if (userOption?.UserProvider == null)
@@ -28,18 +35,26 @@ namespace OSS.Core.Infrastructure.Web.Attributes.Auth
             //p_IsWebSite = userOption.IsWebSite;
         }
 
+        /// <summary>
+        ///  授权异步处理
+        /// </summary>
+        /// <param name="context"></param>
+        /// <returns></returns>
         public override async Task OnAuthorizationAsync(AuthorizationFilterContext context)
         {
             if (UserContext.IsAuthenticated)
                 return;
 
-            var appInfo = AppReqContext.Identity;
-            _userOption.UserProvider.FormatUserToken(context.HttpContext, appInfo);
+            if (context.ActionDescriptor.EndpointMetadata.Any(filter => filter is IAllowAnonymous))
+                return;
 
-            var res =await FormatUserIdentity(context, appInfo, _userOption);
+            var appInfo = AppReqContext.Identity;
+            //_userOption.UserProvider.FormatUserToken(context.HttpContext, appInfo);
+
+            var res = await FormatUserIdentity(context, appInfo, _userOption);
             if (!res.IsSuccess())
             {
-                ResponseExceptionEnd(context, res);
+                UserAuthErrorReponse(context, appInfo, res);
                 return;
             }
 
@@ -50,21 +65,33 @@ namespace OSS.Core.Infrastructure.Web.Attributes.Auth
             }
         }
 
+        private void UserAuthErrorReponse(AuthorizationFilterContext context, AppIdentity appInfo, Resp res)
+        {
+            if (!res.IsRespType(RespTypes.UnLogin))
+            {
+                ResponseExceptionEnd(context, res);
+                return;
+            }
+
+            // 重定向用户登录页
+            if (!string.IsNullOrEmpty(AppWebInfoHelper.LoginUrl)
+                   && appInfo.SourceMode == AppSourceMode.Browser)
+            {
+                var req = context.HttpContext.Request;
+                var rUrl = string.Concat(req.Path, req.QueryString);
+
+                var newUrl = string.Concat(AppWebInfoHelper.LoginUrl, "?rurl=" + rUrl.UrlEncode());
+
+                context.Result = new RedirectResult(newUrl);
+                return;
+            }
+            context.Result = new JsonResult(res);
+            return;
+        }
 
         private static async Task<Resp> FormatUserIdentity(AuthorizationFilterContext context,AppIdentity appInfo,UserAuthOption opt)
         {
-            if (context.ActionDescriptor.EndpointMetadata.Any(filter => filter is IAllowAnonymous))
-                return new Resp();
-
-            //if (opt.IsWebSite && string.IsNullOrEmpty(appInfo.token))
-            //    appInfo.token = context.HttpContext.Request.Cookies[CookieKeys.UserCookieName];
-
-            //if (string.IsNullOrEmpty(appInfo.token))
-            //{
-            //    return new Resp().WithResp(RespTypes.UnLogin, "请先登录！");
-            //}
-
-            var identityRes = await opt.UserProvider.InitialAuthUserIdentity(context.HttpContext, appInfo);
+            var identityRes = await opt.UserProvider.InitialIdentity(context.HttpContext, appInfo);
             if (!identityRes.IsSuccess())
                 return identityRes;
 
@@ -84,7 +111,11 @@ namespace OSS.Core.Infrastructure.Web.Attributes.Auth
         }
 
     }
-    public class UserAuthOption : BaseAuthOption
+
+    /// <summary>
+    ///  用户授权参数
+    /// </summary>
+    public class UserAuthOption 
     {
         /// <summary>
         ///  功能方法权限判断接口
